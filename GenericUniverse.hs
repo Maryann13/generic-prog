@@ -1,8 +1,8 @@
 {-# LANGUAGE PolyKinds, GADTs, ConstraintKinds, DataKinds,
     TypeOperators, TypeFamilies, RankNTypes, ScopedTypeVariables,
-    StandaloneDeriving, MultiParamTypeClasses, UndecidableInstances,
-    FlexibleInstances                                                #-}
-module GenericProg where
+    MultiParamTypeClasses, UndecidableInstances, FlexibleInstances,
+    FlexibleContexts                                                #-}
+module GenericUniverse where
 
 import GHC.Exts (Constraint)
 
@@ -12,33 +12,33 @@ data NP (f :: k -> *) (xs :: [k]) where
     (:*) :: f x -> NP f xs -> NP f (x ': xs)
 infixr 5 :*
 
--- Representable type f a
-class Rep f a where
-    from :: a   -> f a
-    to   :: f a -> a
+-- N-ary sum
+data NS (f :: k -> *) (xs :: [k]) where
+    Z ::    f x  -> NS f (x ': xs)
+    S :: NS f xs -> NS f (x ': xs)
+
+-- Isomorphous f a
+class Iso f a where
+    to   :: a   -> f a
+    from :: f a -> a
 
 -- Identity function on types
 newtype I a = I {unI :: a}
 
-instance Show a => Show (I a) where
-    show (I x) = show x
+-- A sum of products
+newtype SOP f a = SOP {unSOP :: NS (NP f) a}
+-- The representation of a datatype
+type Rep f a = SOP f (Code a)
 
-instance Rep I a where
-    from x   = I x
-    to (I x) = x
-
-instance Ord a => Ord (I a) where
-    (>)  (I x) (I y) = x > y
-    (<=) (I x) (I y) = x <= y
+-- The class of representable datatypes
+class (SListI (Code a), All SListI (Code a), All2 (Iso f) (Code a))
+        => Generic (f :: * -> *) (a :: *) where
+    type Code a :: [[*]]
+    gfrom ::     f a -> Rep f a
+    gto   :: Rep f a ->     f a
 
 -- Constant function on types
 newtype K a b = K {unK :: a}
-
-instance Show a => Show (K a b) where
-    show (K x) = show x
-
-instance (Eq a, Rep f a) => Eq (f a) where
-    (==) x y = (to x) == (to y)
 
 {- Determines if a constraint holds for all
    elements of a type-level list            -}
@@ -47,11 +47,27 @@ type family All (c :: k -> Constraint) (xs :: [k])
     All c '[]       = ()
     All c (x ': xs) = (c x, All c xs)
 
+-- Requires a constraint for every element of a list of lists
+type family All2 (c :: k -> Constraint) (xss :: [[k]])
+        :: Constraint where
+    All2 c '[]         = ()
+    All2 c (xs ': xss) = (All c xs, All2 c xss)
+
+{- For every list in a list of lists requires a constraint for
+   its corresponding NP                                        -}
+type family All_NP (c :: k -> Constraint) (f :: k -> *) (xss :: [[k]])
+        :: Constraint where
+    All_NP c f '[]         = ()
+    All_NP c f (xs ': xss) = (c (NP f xs), All_NP c f xss)
+
 -- Fixes the value of a type variable
 data Proxy (a :: k) = Proxy
 
 newtype (f -.-> g) a = Fn {apFn :: f a -> g a}
 infixr 1 -.->
+
+-- A natural number
+data Nat = Zero | Suc Nat
 
 -- Singleton list: declaration
 data SList (xs :: [k]) where
@@ -74,8 +90,6 @@ newtype (f :.: g) x = Comp {unComp :: f(g x)}
 class    (f (g x)) => (f `Compose` g) x
 instance (f (g x)) => (f `Compose` g) x
 
-deriving instance (All (Show `Compose` f) xs) => Show (NP f xs)
-
 {- Produces an n-ary product of copies
    for constrained functions           -}
 hcpure :: forall c f xs . (SListI xs, All c xs)
@@ -92,7 +106,7 @@ hap (f :* fs) (x :* xs) = apFn f x :* hap fs xs
 
 fn_2 :: (f a -> f' a -> f'' a)
      -> (f -.-> f' -.-> f'') a
-fn_2 f = Fn (\x -> Fn (\y -> f x y))
+fn_2 f = Fn (Fn . f)
 
 -- Collapses an NP of Ks into a normal list
 hcollapse :: NP (K a) xs -> [a]
@@ -101,13 +115,5 @@ hcollapse (K x :* xs) = x : hcollapse xs
 
 -- Mapping over n-ary product
 hmap :: (forall x . f x -> g x) -> NP f xs -> NP g xs
-hmap m Nil       = Nil
+hmap _ Nil       = Nil
 hmap m (x :* xs) = m x :* hmap m xs
-
--- Mapping of 2nd order with a constrained function
-hcmap_2 :: All c xs
-        => Proxy c
-        -> (forall x . c x => f x -> g x -> h x)
-        -> NP f xs -> NP (g -.-> h) xs
-hcmap_2 p m Nil       = Nil
-hcmap_2 p m (x :* xs) = (\x -> Fn (\y -> m x y)) x :* hcmap_2 p m xs
